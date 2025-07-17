@@ -1,68 +1,59 @@
 import streamlit as st
 import pandas as pd
-import fitz  # PyMuPDF para leer PDFs
-import re
-import io
+import xml.etree.ElementTree as ET
+from io import BytesIO
 
-def extract_data_from_pdf(pdf_file):
-    text = ""
-    with fitz.open(stream=pdf_file.read(), filetype="pdf") as doc:
-        for page in doc:
-            text += page.get_text()
+st.set_page_config(page_title="Extractor XML Facturas CR", layout="wide")
+st.title("📄 Extractor de Facturas XML de Hacienda (v4.3)")
+st.markdown("Subí uno o más archivos XML de facturas electrónicas de Costa Rica para extraer los datos clave.")
 
-    # Buscar número de factura
-    num_factura = re.search(r'FACTURA ELECTRÓNICA ?[:#]?\s*(\d+)', text)
-    if not num_factura:
-        num_factura = re.search(r'Numero Consecutivo[:#]?\s*(\d+)', text)
-    numero = num_factura.group(1) if num_factura else "No encontrado"
+NS = {'h': 'https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.3/facturaElectronica'}
 
-    # Buscar monto sin impuesto
-    monto_sin_iva = re.search(r'(?:SUBTOTAL|MONTO GRAVADO|MERCADERIA GRAVADA)\s*[:₡]*\s*([\d.,]+)', text)
-    monto = monto_sin_iva.group(1).replace(",", "") if monto_sin_iva else "0"
+def extract_invoice_data(xml_content):
+    root = ET.fromstring(xml_content)
+    return {
+        "Emisor": root.findtext(".//h:Emisor/h:Nombre", namespaces=NS),
+        "Receptor": root.findtext(".//h:Receptor/h:Nombre", namespaces=NS),
+        "Identificación Receptor": root.findtext(".//h:Receptor/h:Identificacion/h:Numero", namespaces=NS),
+        "Fecha Emisión": root.findtext(".//h:FechaEmision", namespaces=NS),
+        "Consecutivo": root.findtext(".//h:NumeroConsecutivo", namespaces=NS),
+        "Moneda": root.findtext(".//h:ResumenFactura/h:CodigoTipoMoneda/h:CodigoMoneda", namespaces=NS),
+        "Venta Neta": root.findtext(".//h:ResumenFactura/h:TotalVentaNeta", namespaces=NS),
+        "Impuesto": root.findtext(".//h:ResumenFactura/h:TotalImpuesto", namespaces=NS),
+        "Total Comprobante": root.findtext(".//h:ResumenFactura/h:TotalComprobante", namespaces=NS),
+    }
 
-    # Buscar IVA
-    iva_match = re.search(r'IVA\s*[:₡]*\s*([\d.,]+)', text)
-    iva = iva_match.group(1).replace(",", "") if iva_match else "0"
-
-    try:
-        monto_float = float(monto)
-        iva_float = float(iva)
-    except:
-        monto_float = 0.0
-        iva_float = 0.0
-
-    return numero, monto_float, iva_float
-
-st.title("Extractor de Facturas PDF")
-
-uploaded_files = st.file_uploader("Cargar archivos PDF", type="pdf", accept_multiple_files=True)
+uploaded_files = st.file_uploader("📁 Selecciona uno o más archivos XML", type="xml", accept_multiple_files=True)
 
 if uploaded_files:
-    data = []
-    for pdf_file in uploaded_files:
-        numero, monto, iva = extract_data_from_pdf(pdf_file)
-        data.append({
-            "Archivo": pdf_file.name,
-            "Número de factura": numero,
-            "Monto sin IVA": monto,
-            "IVA": iva
-        })
+    st.success(f"{len(uploaded_files)} archivo(s) cargado(s).")
 
-    df = pd.DataFrame(data)
-    st.dataframe(df)
+    if st.button("🚀 Procesar Facturas"):
+        resultados = []
+        for archivo in uploaded_files:
+            try:
+                contenido = archivo.read()
+                data = extract_invoice_data(contenido)
+                data["Archivo"] = archivo.name
+                resultados.append(data)
+            except Exception as e:
+                st.error(f"❌ Error procesando {archivo.name}: {e}")
 
-    csv = df.to_csv(index=False).encode('utf-8-sig')
-    st.download_button("Descargar CSV", csv, "facturas.csv", "text/csv")
+        if resultados:
+            df = pd.DataFrame(resultados)
+            st.markdown("### 📊 Resultados")
+            st.dataframe(df, use_container_width=True)
 
-    # Crear buffer para Excel
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Facturas')
-    excel_data = output.getvalue()
+            def to_excel_bytes(df):
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                    df.to_excel(writer, index=False, sheet_name="Facturas")
+                return output.getvalue()
 
-    st.download_button(
-        "Descargar Excel",
-        excel_data,
-        "facturas.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+            excel_bytes = to_excel_bytes(df)
+            st.download_button(
+                label="📥 Descargar Excel",
+                data=excel_bytes,
+                file_name="facturas_extraidas.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
