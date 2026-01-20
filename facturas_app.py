@@ -3,33 +3,78 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from io import BytesIO
 
-st.set_page_config(page_title="Extractor XML Facturas CR", layout="wide")
-st.title("📄 Extractor de Facturas XML de Hacienda (v4.3)")
-st.markdown("Subí uno o más archivos XML de facturas electrónicas de Costa Rica para extraer los datos clave.")
+# -------------------------------------------------
+# Configuración Streamlit
+# -------------------------------------------------
+st.set_page_config(
+    page_title="Extractor XML Facturas CR",
+    layout="wide"
+)
 
-NS = {'h': 'https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.3/facturaElectronica'}
+st.title("📄 Extractor de Facturas XML de Hacienda (CR)")
+st.markdown(
+    "Suba uno o más archivos XML de facturas electrónicas "
+    "de Costa Rica (v4.3 / v4.4 – TRIBU-CR) para extraer la información principal."
+)
+
+# -------------------------------------------------
+# Utilidades XML
+# -------------------------------------------------
+def get_namespace(root):
+    """
+    Detecta automáticamente el namespace del XML
+    (v4.3, v4.4 o futuras versiones).
+    """
+    if root.tag.startswith("{"):
+        return root.tag.split("}")[0].strip("{")
+    return ""
+
 
 def extract_invoice_data(xml_content):
+    """
+    Extrae los datos principales de una Factura Electrónica CR
+    compatible con v4.3 y v4.4.
+    """
     root = ET.fromstring(xml_content)
+
+    ns_uri = get_namespace(root)
+    NS = {"h": ns_uri} if ns_uri else {}
+
+    def xt(path):
+        return root.findtext(path, namespaces=NS)
+
     return {
-        "Emisor": root.findtext(".//h:Emisor/h:Nombre", namespaces=NS),
-        "Receptor": root.findtext(".//h:Receptor/h:Nombre", namespaces=NS),
-        "Identificación Receptor": root.findtext(".//h:Receptor/h:Identificacion/h:Numero", namespaces=NS),
-        "Fecha Emisión": root.findtext(".//h:FechaEmision", namespaces=NS),
-        "Consecutivo": root.findtext(".//h:NumeroConsecutivo", namespaces=NS),
-        "Moneda": root.findtext(".//h:ResumenFactura/h:CodigoTipoMoneda/h:CodigoMoneda", namespaces=NS),
-        "Venta Neta": root.findtext(".//h:ResumenFactura/h:TotalVentaNeta", namespaces=NS),
-        "Impuesto": root.findtext(".//h:ResumenFactura/h:TotalImpuesto", namespaces=NS),
-        "Total Comprobante": root.findtext(".//h:ResumenFactura/h:TotalComprobante", namespaces=NS),
+        "Emisor": xt(".//h:Emisor/h:Nombre"),
+        "Receptor": xt(".//h:Receptor/h:Nombre"),
+        "Identificación Receptor": xt(".//h:Receptor/h:Identificacion/h:Numero"),
+        "Fecha Emisión": xt(".//h:FechaEmision"),
+        "Consecutivo": xt(".//h:NumeroConsecutivo"),
+        "Moneda": xt(".//h:ResumenFactura/h:CodigoTipoMoneda/h:CodigoMoneda"),
+        "Venta Neta": xt(".//h:ResumenFactura/h:TotalVentaNeta"),
+        "Impuesto": xt(".//h:ResumenFactura/h:TotalImpuesto") or "0",
+        "Total Comprobante": xt(".//h:ResumenFactura/h:TotalComprobante"),
+        "Namespace Detectado": ns_uri,
     }
 
-uploaded_files = st.file_uploader("📁 Selecciona uno o más archivos XML", type="xml", accept_multiple_files=True)
 
+# -------------------------------------------------
+# Carga de archivos
+# -------------------------------------------------
+uploaded_files = st.file_uploader(
+    "📁 Seleccione uno o más archivos XML",
+    type="xml",
+    accept_multiple_files=True
+)
+
+# -------------------------------------------------
+# Procesamiento
+# -------------------------------------------------
 if uploaded_files:
     st.success(f"{len(uploaded_files)} archivo(s) cargado(s).")
 
     if st.button("🚀 Procesar Facturas"):
         resultados = []
+
         for archivo in uploaded_files:
             try:
                 contenido = archivo.read()
@@ -41,16 +86,25 @@ if uploaded_files:
 
         if resultados:
             df = pd.DataFrame(resultados)
+
             st.markdown("### 📊 Resultados")
             st.dataframe(df, use_container_width=True)
 
-            def to_excel_bytes(df):
+            # -------------------------------------------------
+            # Exportar a Excel
+            # -------------------------------------------------
+            def to_excel_bytes(dataframe):
                 output = BytesIO()
                 with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                    df.to_excel(writer, index=False, sheet_name="Facturas")
+                    dataframe.to_excel(
+                        writer,
+                        index=False,
+                        sheet_name="Facturas"
+                    )
                 return output.getvalue()
 
             excel_bytes = to_excel_bytes(df)
+
             st.download_button(
                 label="📥 Descargar Excel",
                 data=excel_bytes,
